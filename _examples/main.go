@@ -12,7 +12,7 @@ import (
 
 func main() {
 
-	relay, err := relay.New(relay.Config{
+	relayClient, err := relay.New(relay.Config{
 		BaseURL: "http://localhost:8080",
 	})
 	if err != nil {
@@ -40,7 +40,7 @@ func main() {
 		if err != nil {
 			break
 		}
-		jh, err := relay.Next(ctx, queue)
+		jh, err := relayClient.Next(ctx, queue)
 		if err != nil {
 			panic(err)
 		}
