@@ -4,3 +4,15 @@
 
 This package is a Go client for the Relay Job Runner found [here](https://github.com/rust-playground/relay-rs).
 
+Usage
+------
+See [example here](/_examples).
+
+How to Contribute
+------
+
+Make a pull request...
+
+License
+-------
+Distributed under MIT License, please see license file within the code for more details.
