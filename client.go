@@ -152,7 +152,7 @@ func (r *Client) Next(ctx context.Context, queue string) (*JobHelper, error) {
 
 		switch resp.StatusCode {
 		case http.StatusOK:
-			var j Job
+			var j *Job
 			err := json.NewDecoder(resp.Body).Decode(&j)
 			if err != nil {
 				// connection must have been disrupted, continue to retrieve, the Job IF lost will
@@ -191,12 +191,12 @@ type JobHelper struct {
 	completeURL  string
 	client       *http.Client
 	cancel       context.CancelFunc
-	job          Job
+	job          *Job
 	wg           sync.WaitGroup
 }
 
 // Job returns the Job to process
-func (j *JobHelper) Job() Job {
+func (j *JobHelper) Job() *Job {
 	return j.job
 }
 
