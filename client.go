@@ -100,13 +100,13 @@ func New(cfg Config) (*Client, error) {
 }
 
 // Enqueue submits the provided Job for processing to the Job Server.
-func (r *Client) Enqueue(job Job) error {
+func (r *Client) Enqueue(ctx context.Context, job Job) error {
 	b, err := json.Marshal(job)
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal job")
 	}
 
-	req, err := http.NewRequest(http.MethodPost, r.enqueueURL, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.enqueueURL, bytes.NewReader(b))
 	if err != nil {
 		return errors.Wrap(err, "failed to create heartbeat request")
 	}
