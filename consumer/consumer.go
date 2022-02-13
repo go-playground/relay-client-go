@@ -109,7 +109,8 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 			break
 		}
 
-		jh, err := c.client.Next(ctx, c.queue)
+		var jh *relay.JobHelper
+		jh, err = c.client.Next(ctx, c.queue)
 		if err != nil {
 			// check for lower level network errors, timeouts, ... and retry automatically
 			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
