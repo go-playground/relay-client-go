@@ -56,7 +56,8 @@ type Config struct {
 	NextBackoff backoff.Exponential
 
 	// Client is the HTTP Client to use if using a custom one is desired.
-	// Optional: If not set it will use  the `http.DefaultClient`.
+	// Optional: If not set it will create a new one cloning the `http.DefaultTransport` and tweaking the settings
+	//           for use with sane limits & Defaults.
 	Client *http.Client
 }
 
@@ -85,7 +86,14 @@ func New(cfg Config) (*Client, error) {
 	}
 
 	if cfg.Client == nil {
-		cfg.Client = http.DefaultClient
+		trans := http.DefaultTransport.(*http.Transport).Clone()
+		trans.MaxConnsPerHost = 1024
+		trans.MaxIdleConnsPerHost = 512
+		trans.IdleConnTimeout = time.Second * 5
+
+		cfg.Client = &http.Client{
+			Transport: trans,
+		}
 	}
 
 	r := &Client{
@@ -100,13 +108,13 @@ func New(cfg Config) (*Client, error) {
 }
 
 // Enqueue submits the provided Job for processing to the Job Server.
-func (r *Client) Enqueue(job Job) error {
+func (r *Client) Enqueue(ctx context.Context, job Job) error {
 	b, err := json.Marshal(job)
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal job")
 	}
 
-	req, err := http.NewRequest(http.MethodPost, r.enqueueURL, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.enqueueURL, bytes.NewReader(b))
 	if err != nil {
 		return errors.Wrap(err, "failed to create heartbeat request")
 	}
@@ -174,6 +182,11 @@ func (r *Client) Next(ctx context.Context, queue string) (*JobHelper, error) {
 		default:
 			// includes http.StatusNoContent and http.TooManyRequests
 			// no new jobs to process
+			dur := r.bo.Duration(attempt)
+			fmt.Println(attempt, dur)
+			if dur < time.Nanosecond {
+				panic("WHAT!")
+			}
 			if err := r.bo.Sleep(ctx, attempt); err != nil {
 				// only context.Cancel as error ever
 				return nil, err
