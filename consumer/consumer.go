@@ -155,13 +155,13 @@ func (c *Consumer) poller(ctx context.Context, ch chan<- *relay.JobHelper) (err 
 				c.sem.Release(1)
 				continue
 			}
-			err = errors.Wrap(err, "failed to initialize Relay Worker")
+			err = errors.Wrap(err, "failed to fetch next Job")
 			break
 		}
 		ch <- jh
 		continue
 	}
-	return err
+	return
 }
 
 func (c *Consumer) worker(ctx context.Context, ch <-chan *relay.JobHelper) error {
