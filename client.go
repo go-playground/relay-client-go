@@ -182,11 +182,6 @@ func (r *Client) Next(ctx context.Context, queue string) (*JobHelper, error) {
 		default:
 			// includes http.StatusNoContent and http.TooManyRequests
 			// no new jobs to process
-			dur := r.bo.Duration(attempt)
-			fmt.Println(attempt, dur)
-			if dur < time.Nanosecond {
-				panic("WHAT!")
-			}
 			if err := r.bo.Sleep(ctx, attempt); err != nil {
 				// only context.Cancel as error ever
 				return nil, err
