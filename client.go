@@ -44,6 +44,11 @@ type Job struct {
 	// This state will be ignored when enqueueing a Job and can only be set via a Heartbeat
 	// request.
 	State json.RawMessage `json:"state,omitempty"`
+
+	// RunAt can optionally schedule/set a Job to be run only at a specific time in the
+	// future. This option should mainly be used for one-time jobs and scheduled jobs that have
+	// the option of being self-perpetuated in combination with the reschedule endpoint.
+	RunAt *time.Time `json:"run_at,omitempty"`
 }
 
 // Config contains all information to create a new REaly instance fo use.
@@ -63,12 +68,13 @@ type Config struct {
 
 // Client is used to interact with the Client Job Server.
 type Client struct {
-	enqueueURL   string
-	heartbeatURL string
-	completeURL  string
-	nextURL      string
-	bo           backoff.Exponential
-	client       *http.Client
+	enqueueURL    string
+	heartbeatURL  string
+	rescheduleURL string
+	completeURL   string
+	nextURL       string
+	bo            backoff.Exponential
+	client        *http.Client
 }
 
 // New creates a new Client instance for use.
@@ -97,12 +103,13 @@ func New(cfg Config) (*Client, error) {
 	}
 
 	r := &Client{
-		enqueueURL:   fmt.Sprintf("%s/enqueue", base),
-		heartbeatURL: fmt.Sprintf("%s/heartbeat", base),
-		completeURL:  fmt.Sprintf("%s/complete", base),
-		nextURL:      fmt.Sprintf("%s/next", base),
-		bo:           cfg.NextBackoff,
-		client:       cfg.Client,
+		enqueueURL:    fmt.Sprintf("%s/enqueue", base),
+		heartbeatURL:  fmt.Sprintf("%s/heartbeat", base),
+		rescheduleURL: fmt.Sprintf("%s/reschedule", base),
+		completeURL:   fmt.Sprintf("%s/complete", base),
+		nextURL:       fmt.Sprintf("%s/next", base),
+		bo:            cfg.NextBackoff,
+		client:        cfg.Client,
 	}
 	return r, nil
 }
@@ -116,13 +123,13 @@ func (r *Client) Enqueue(ctx context.Context, job Job) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.enqueueURL, bytes.NewReader(b))
 	if err != nil {
-		return errors.Wrap(err, "failed to create heartbeat request")
+		return errors.Wrap(err, "failed to create enqueue request")
 	}
 	req.Header.Set(httpext.ContentType, httpext.ApplicationJSON)
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return errors.Wrap(err, "failed to make heartbeat request")
+		return errors.Wrap(err, "failed to make enqueue request")
 	}
 	defer resp.Body.Close()
 
@@ -174,10 +181,11 @@ func (r *Client) Next(ctx context.Context, queue string) (*JobHelper, error) {
 			encoded := values.Encode()
 
 			return &JobHelper{
-				heartbeatURL: r.heartbeatURL + "?" + encoded,
-				completeURL:  r.completeURL + "?" + encoded,
-				client:       r.client,
-				job:          j,
+				heartbeatURL:  r.heartbeatURL + "?" + encoded,
+				rescheduleURL: r.rescheduleURL,
+				completeURL:   r.completeURL + "?" + encoded,
+				client:        r.client,
+				job:           j,
 			}, nil
 		default:
 			// includes http.StatusNoContent and http.TooManyRequests
@@ -195,12 +203,13 @@ func (r *Client) Next(ctx context.Context, queue string) (*JobHelper, error) {
 // JobHelper is used to process an individual Job retrieved from the Job Server. It contains a number of helper methods
 // to `Heartbeat` and `Complete` Jobs.
 type JobHelper struct {
-	heartbeatURL string
-	completeURL  string
-	client       *http.Client
-	cancel       context.CancelFunc
-	job          *Job
-	wg           sync.WaitGroup
+	heartbeatURL  string
+	rescheduleURL string
+	completeURL   string
+	client        *http.Client
+	cancel        context.CancelFunc
+	job           *Job
+	wg            sync.WaitGroup
 }
 
 // Job returns the Job to process
@@ -264,13 +273,47 @@ func (j *JobHelper) Heartbeat(ctx context.Context, state json.RawMessage) error 
 		return nil
 	case http.StatusNotFound:
 		b, _ := ioutil.ReadAll(resp.Body)
-		return ErrNotFound{message: string(b)}
+		return ErrNotFound{message: unsafeext.BytesToString(b)}
 	default:
 		if httpext.IsRetryableStatusCode(resp.StatusCode) {
 			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
 		}
 		b, _ := ioutil.ReadAll(resp.Body)
-		return errors.Newf("error: %s", string(b))
+		return errors.Newf("error: %s", unsafeext.BytesToString(b))
+	}
+}
+
+// Reschedule submits the provided Job for processing by rescheduling an existing Job for another iteration.
+func (j *JobHelper) Reschedule(ctx context.Context, job Job) error {
+	b, err := json.Marshal(job)
+	if err != nil {
+		return errors.Wrap(err, "failed to marshal job")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, j.rescheduleURL, bytes.NewReader(b))
+	if err != nil {
+		return errors.Wrap(err, "failed to create reschedule request")
+	}
+	req.Header.Set(httpext.ContentType, httpext.ApplicationJSON)
+
+	resp, err := j.client.Do(req)
+	if err != nil {
+		return errors.Wrap(err, "failed to make reschedule request")
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusAccepted:
+		return nil
+	case http.StatusNotFound:
+		b, _ := ioutil.ReadAll(resp.Body)
+		return ErrNotFound{message: unsafeext.BytesToString(b)}
+	default:
+		if httpext.IsRetryableStatusCode(resp.StatusCode) {
+			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
+		}
+		b, _ := ioutil.ReadAll(resp.Body)
+		return errors.Newf("error: %s", unsafeext.BytesToString(b))
 	}
 }
 
@@ -296,13 +339,13 @@ func (j *JobHelper) Complete(ctx context.Context) error {
 		return nil
 	case http.StatusNotFound:
 		b, _ := ioutil.ReadAll(resp.Body)
-		return ErrNotFound{message: string(b)}
+		return ErrNotFound{message: unsafeext.BytesToString(b)}
 	default:
 		if httpext.IsRetryableStatusCode(resp.StatusCode) {
 			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
 		}
 		b, _ := ioutil.ReadAll(resp.Body)
-		return errors.Newf("error: %s", string(b))
+		return errors.Newf("error: %s", unsafeext.BytesToString(b))
 	}
 }
 
