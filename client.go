@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -68,13 +69,14 @@ type Config struct {
 
 // Client is used to interact with the Client Job Server.
 type Client struct {
-	enqueueURL    string
-	heartbeatURL  string
-	rescheduleURL string
-	completeURL   string
-	nextURL       string
-	bo            backoff.Exponential
-	client        *http.Client
+	enqueueURL      string
+	enqueueBatchURL string
+	heartbeatURL    string
+	rescheduleURL   string
+	completeURL     string
+	nextURL         string
+	bo              backoff.Exponential
+	client          *http.Client
 }
 
 // New creates a new Client instance for use.
@@ -103,13 +105,14 @@ func New(cfg Config) (*Client, error) {
 	}
 
 	r := &Client{
-		enqueueURL:    fmt.Sprintf("%s/enqueue", base),
-		heartbeatURL:  fmt.Sprintf("%s/heartbeat", base),
-		rescheduleURL: fmt.Sprintf("%s/reschedule", base),
-		completeURL:   fmt.Sprintf("%s/complete", base),
-		nextURL:       fmt.Sprintf("%s/next", base),
-		bo:            cfg.NextBackoff,
-		client:        cfg.Client,
+		enqueueURL:      fmt.Sprintf("%s/enqueue", base),
+		enqueueBatchURL: fmt.Sprintf("%s/enqueue/batch", base),
+		heartbeatURL:    fmt.Sprintf("%s/heartbeat", base),
+		rescheduleURL:   fmt.Sprintf("%s/reschedule", base),
+		completeURL:     fmt.Sprintf("%s/complete", base),
+		nextURL:         fmt.Sprintf("%s/next", base),
+		bo:              cfg.NextBackoff,
+		client:          cfg.Client,
 	}
 	return r, nil
 }
@@ -148,10 +151,44 @@ func (r *Client) Enqueue(ctx context.Context, job Job) error {
 	}
 }
 
+// EnqueueBatch submits one or more Jobs for processing to the Job Server in one call.
+func (r *Client) EnqueueBatch(ctx context.Context, jobs []Job) error {
+	b, err := json.Marshal(jobs)
+	if err != nil {
+		return errors.Wrap(err, "failed to marshal jobs")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.enqueueBatchURL, bytes.NewReader(b))
+	if err != nil {
+		return errors.Wrap(err, "failed to create enqueue request")
+	}
+	req.Header.Set(httpext.ContentType, httpext.ApplicationJSON)
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return errors.Wrap(err, "failed to make enqueue request")
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusAccepted:
+		return nil
+	case http.StatusConflict:
+		b, _ := ioutil.ReadAll(resp.Body)
+		return ErrJobExits{message: unsafeext.BytesToString(b)}
+	default:
+		if httpext.IsRetryableStatusCode(resp.StatusCode) {
+			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
+		}
+		b, _ := ioutil.ReadAll(resp.Body)
+		return errors.Newf("error: %s", unsafeext.BytesToString(b))
+	}
+}
+
 // Next attempts to retrieve the next Job in the `queue` requested. It will retry and backoff attempting to retrieve
 // a Job and will block until retrieving a Job or the Context is cancelled.
-func (r *Client) Next(ctx context.Context, queue string) (*JobHelper, error) {
-	nextURL := r.nextURL + "?queue=" + url.QueryEscape(queue)
+func (r *Client) Next(ctx context.Context, queue string, num_jobs uint32) ([]*JobHelper, error) {
+	nextURL := r.nextURL + "?queue=" + url.QueryEscape(queue) + "&num_jobs=" + url.QueryEscape(strconv.Itoa(int(num_jobs)))
 	var attempt int
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, nextURL, nil)
@@ -167,26 +204,33 @@ func (r *Client) Next(ctx context.Context, queue string) (*JobHelper, error) {
 
 		switch resp.StatusCode {
 		case http.StatusOK:
-			var j *Job
-			err := json.NewDecoder(resp.Body).Decode(&j)
+			var jobs []*Job
+			err := json.NewDecoder(resp.Body).Decode(&jobs)
 			if err != nil {
 				// connection must have been disrupted, continue to retrieve, the Job IF lost will
 				// be retried.
 				continue
 			}
-			values := make(url.Values)
-			values.Set("job_id", j.ID)
-			values.Set("queue", j.Queue)
 
-			encoded := values.Encode()
+			helpers := make([]*JobHelper, 0, len(jobs))
 
-			return &JobHelper{
-				heartbeatURL:  r.heartbeatURL + "?" + encoded,
-				rescheduleURL: r.rescheduleURL,
-				completeURL:   r.completeURL + "?" + encoded,
-				client:        r.client,
-				job:           j,
-			}, nil
+			for _, j := range jobs {
+				j := j
+				values := make(url.Values)
+				values.Set("job_id", j.ID)
+				values.Set("queue", j.Queue)
+
+				encoded := values.Encode()
+
+				helpers = append(helpers, &JobHelper{
+					heartbeatURL:  r.heartbeatURL + "?" + encoded,
+					rescheduleURL: r.rescheduleURL,
+					completeURL:   r.completeURL + "?" + encoded,
+					client:        r.client,
+					job:           j,
+				})
+			}
+			return helpers, nil
 		default:
 			// includes http.StatusNoContent and http.TooManyRequests
 			// no new jobs to process
