@@ -32,7 +32,7 @@ type Config struct {
 	// this should only be tuned for consistent high-flow services for which a single poller becomes the
 	// bottleneck which is rare. This should never be set greater than the maximum number of workers and in
 	// most cases should be far less than.
-	// By default, there will only be one poller.
+	// By default, there will only be one poller which should be all you need 99.99999% of the time.
 	Pollers int
 
 	// NoAutoComplete turns off auto-completion of a Job that is processed without error allowing
@@ -141,14 +141,29 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 }
 
 func (c *Consumer) poller(ctx context.Context, ch chan<- *relay.JobHelper) (err error) {
+	var numJobs uint32
 	for {
-		err = c.sem.Acquire(ctx, 1)
-		if err != nil {
+		//numJobs = 0
+		if numJobs == 0 {
+			err = c.sem.Acquire(ctx, 1)
+			if err != nil {
+				break
+			}
+			numJobs++
+		}
+
+		//attempt to maximize acquires into number of Jobs to try and pull.
+		for {
+			if c.sem.TryAcquire(1) {
+				numJobs++
+				continue
+			}
 			break
 		}
 
-		var jh *relay.JobHelper
-		jh, err = c.client.Next(ctx, c.queue)
+		// TODO: refactor usage of semaphore to be able to know how many jobs we can automatically query in one go :)
+		var helpers []*relay.JobHelper
+		helpers, err = c.client.Next(ctx, c.queue, numJobs)
 		if err != nil {
 			// check for lower level network errors, timeouts, ... and retry automatically
 			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
@@ -158,7 +173,10 @@ func (c *Consumer) poller(ctx context.Context, ch chan<- *relay.JobHelper) (err 
 			err = errors.Wrap(err, "failed to fetch next Job")
 			break
 		}
-		ch <- jh
+		for _, jh := range helpers {
+			ch <- jh
+		}
+		numJobs = uint32(int(numJobs) - len(helpers))
 		continue
 	}
 	return

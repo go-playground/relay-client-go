@@ -13,6 +13,7 @@ import (
 // Enqueuer represents the enqueuer of Jobs.
 type Enqueuer interface {
 	Enqueue(context.Context, relay.Job) error
+	EnqueueBatch(context.Context, []relay.Job) error
 }
 
 // Config contains all information needed to initialize a Producer.
@@ -63,6 +64,27 @@ func (p *Producer) Enqueue(ctx context.Context, job relay.Job) (err error) {
 				continue
 			}
 			return errors.Wrap(err, "failed to enqueue Job")
+		}
+		return nil
+	}
+}
+
+// EnqueueBatch submits multiple Jobs for processing to the Job Server in one call using the provided Enqueuer.
+func (p *Producer) EnqueueBatch(ctx context.Context, jobs []relay.Job) (err error) {
+	var attempt int
+	for {
+		if attempt > 0 {
+			if err = p.bo.Sleep(ctx, attempt); err != nil {
+				// can only happen if context cancelled or timed out
+				return err
+			}
+		}
+		if err = p.enqueuer.EnqueueBatch(ctx, jobs); err != nil {
+			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
+				attempt++
+				continue
+			}
+			return errors.Wrap(err, "failed to enqueue Jobs")
 		}
 		return nil
 	}
