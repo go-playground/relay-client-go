@@ -153,12 +153,8 @@ func (c *Consumer) poller(ctx context.Context, ch chan<- *relay.JobHelper) (err 
 		}
 
 		//attempt to maximize acquires into number of Jobs to try and pull.
-		for {
-			if c.sem.TryAcquire(1) {
-				numJobs++
-				continue
-			}
-			break
+		for c.sem.TryAcquire(1) {
+			numJobs++
 		}
 
 		// TODO: refactor usage of semaphore to be able to know how many jobs we can automatically query in one go :)

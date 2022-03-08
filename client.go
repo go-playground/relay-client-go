@@ -216,18 +216,10 @@ func (r *Client) Next(ctx context.Context, queue string, num_jobs uint32) ([]*Jo
 
 			for _, j := range jobs {
 				j := j
-				values := make(url.Values)
-				values.Set("job_id", j.ID)
-				values.Set("queue", j.Queue)
-
-				encoded := values.Encode()
-
 				helpers = append(helpers, &JobHelper{
-					heartbeatURL:  r.heartbeatURL + "?" + encoded,
-					rescheduleURL: r.rescheduleURL,
-					completeURL:   r.completeURL + "?" + encoded,
-					client:        r.client,
-					job:           j,
+					client:     r,
+					httpClient: r.client,
+					job:        j,
 				})
 			}
 			return helpers, nil
@@ -244,16 +236,50 @@ func (r *Client) Next(ctx context.Context, queue string, num_jobs uint32) ([]*Jo
 	}
 }
 
+// Remove removes the Job from the DB for processing. In fact this function makes a call to the complete endpoint.
+//
+// NOTE: It does not matter if the Job is in-flight or not it will be removed. All relevant code paths return an
+//       ErrNotFound to handle such events within Job Workers so that they can bail gracefully if desired.
+//
+func (r *Client) Remove(ctx context.Context, queue, jobID string) error {
+	values := make(url.Values)
+	values.Set("job_id", jobID)
+	values.Set("queue", queue)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, r.completeURL+"?"+values.Encode(), nil)
+	if err != nil {
+		return errors.Wrap(err, "failed to create complete request")
+	}
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return errors.Wrap(err, "failed to make complete request")
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound:
+		b, _ := ioutil.ReadAll(resp.Body)
+		return ErrNotFound{message: unsafeext.BytesToString(b)}
+	default:
+		if httpext.IsRetryableStatusCode(resp.StatusCode) {
+			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
+		}
+		b, _ := ioutil.ReadAll(resp.Body)
+		return errors.Newf("error: %s", unsafeext.BytesToString(b))
+	}
+}
+
 // JobHelper is used to process an individual Job retrieved from the Job Server. It contains a number of helper methods
 // to `Heartbeat` and `Complete` Jobs.
 type JobHelper struct {
-	heartbeatURL  string
-	rescheduleURL string
-	completeURL   string
-	client        *http.Client
-	cancel        context.CancelFunc
-	job           *Job
-	wg            sync.WaitGroup
+	client     *Client
+	httpClient *http.Client
+	cancel     context.CancelFunc
+	job        *Job
+	wg         sync.WaitGroup
 }
 
 // Job returns the Job to process
@@ -295,10 +321,16 @@ func (j *JobHelper) Heartbeat(ctx context.Context, state json.RawMessage) error 
 	var err error
 	var req *http.Request
 
+	values := make(url.Values)
+	values.Set("queue", j.Job().Queue)
+	values.Set("job_id", j.Job().ID)
+
+	url := j.client.heartbeatURL + "?" + values.Encode()
+
 	if len(state) > 0 {
-		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, j.heartbeatURL, bytes.NewReader(state))
+		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(state))
 	} else {
-		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, j.heartbeatURL, nil)
+		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, url, nil)
 	}
 
 	if err != nil {
@@ -306,7 +338,7 @@ func (j *JobHelper) Heartbeat(ctx context.Context, state json.RawMessage) error 
 	}
 	req.Header.Set(httpext.ContentType, httpext.ApplicationJSON)
 
-	resp, err := j.client.Do(req)
+	resp, err := j.httpClient.Do(req)
 	if err != nil {
 		return errors.Wrap(err, "failed to make heartbeat request")
 	}
@@ -334,13 +366,13 @@ func (j *JobHelper) Reschedule(ctx context.Context, job Job) error {
 		return errors.Wrap(err, "failed to marshal job")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, j.rescheduleURL, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, j.client.rescheduleURL, bytes.NewReader(b))
 	if err != nil {
 		return errors.Wrap(err, "failed to create reschedule request")
 	}
 	req.Header.Set(httpext.ContentType, httpext.ApplicationJSON)
 
-	resp, err := j.client.Do(req)
+	resp, err := j.httpClient.Do(req)
 	if err != nil {
 		return errors.Wrap(err, "failed to make reschedule request")
 	}
@@ -367,30 +399,7 @@ func (j *JobHelper) Complete(ctx context.Context) error {
 		j.cancel()
 		j.wg.Wait()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, j.completeURL, nil)
-	if err != nil {
-		return errors.Wrap(err, "failed to create complete request")
-	}
-
-	resp, err := j.client.Do(req)
-	if err != nil {
-		return errors.Wrap(err, "failed to make complete request")
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return nil
-	case http.StatusNotFound:
-		b, _ := ioutil.ReadAll(resp.Body)
-		return ErrNotFound{message: unsafeext.BytesToString(b)}
-	default:
-		if httpext.IsRetryableStatusCode(resp.StatusCode) {
-			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
-		}
-		b, _ := ioutil.ReadAll(resp.Body)
-		return errors.Newf("error: %s", unsafeext.BytesToString(b))
-	}
+	return j.client.Remove(ctx, j.Job().Queue, j.Job().ID)
 }
 
 // denotes a retryable error by implementing the `IsTemporary` function.
