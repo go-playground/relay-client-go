@@ -20,7 +20,7 @@ import (
 )
 
 // Job defines all information needed to process a job.
-type Job struct {
+type Job[P any, S any] struct {
 
 	// ID is the unique Job ID which is also CAN be used to ensure the Job is a singleton.
 	ID string `json:"id"`
@@ -38,13 +38,13 @@ type Job struct {
 	MaxRetries int32 `json:"max_retries,omitempty"`
 
 	// Payload is the raw JSON payload that the job runner will receive.
-	Payload json.RawMessage `json:"payload"`
+	Payload P `json:"payload"`
 
 	// State is the raw JSON payload that the job runner will receive.
 	//
 	// This state will be ignored when enqueueing a Job and can only be set via a Heartbeat
 	// request.
-	State json.RawMessage `json:"state,omitempty"`
+	State *S `json:"state,omitempty"`
 
 	// RunAt can optionally schedule/set a Job to be run only at a specific time in the
 	// future. This option should mainly be used for one-time jobs and scheduled jobs that have
@@ -68,7 +68,7 @@ type Config struct {
 }
 
 // Client is used to interact with the Client Job Server.
-type Client struct {
+type Client[P any, S any] struct {
 	enqueueURL      string
 	enqueueBatchURL string
 	heartbeatURL    string
@@ -80,7 +80,7 @@ type Client struct {
 }
 
 // New creates a new Client instance for use.
-func New(cfg Config) (*Client, error) {
+func New[P any, S any](cfg Config) (*Client[P, S], error) {
 	cfg.BaseURL = strings.TrimSpace(cfg.BaseURL)
 	_, err := url.Parse(cfg.BaseURL)
 	if err != nil {
@@ -104,7 +104,7 @@ func New(cfg Config) (*Client, error) {
 		}
 	}
 
-	r := &Client{
+	r := &Client[P, S]{
 		enqueueURL:      fmt.Sprintf("%s/enqueue", base),
 		enqueueBatchURL: fmt.Sprintf("%s/enqueue/batch", base),
 		heartbeatURL:    fmt.Sprintf("%s/heartbeat", base),
@@ -118,7 +118,7 @@ func New(cfg Config) (*Client, error) {
 }
 
 // Enqueue submits the provided Job for processing to the Job Server.
-func (r *Client) Enqueue(ctx context.Context, job Job) error {
+func (r *Client[P, S]) Enqueue(ctx context.Context, job Job[P, S]) error {
 	b, err := json.Marshal(job)
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal job")
@@ -152,7 +152,7 @@ func (r *Client) Enqueue(ctx context.Context, job Job) error {
 }
 
 // EnqueueBatch submits one or more Jobs for processing to the Job Server in one call.
-func (r *Client) EnqueueBatch(ctx context.Context, jobs []Job) error {
+func (r *Client[P, S]) EnqueueBatch(ctx context.Context, jobs []Job[P, S]) error {
 	b, err := json.Marshal(jobs)
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal jobs")
@@ -187,7 +187,7 @@ func (r *Client) EnqueueBatch(ctx context.Context, jobs []Job) error {
 
 // Next attempts to retrieve the next Job in the `queue` requested. It will retry and backoff attempting to retrieve
 // a Job and will block until retrieving a Job or the Context is cancelled.
-func (r *Client) Next(ctx context.Context, queue string, num_jobs uint32) ([]*JobHelper, error) {
+func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) ([]*JobHelper[P, S], error) {
 	nextURL := r.nextURL + "?queue=" + url.QueryEscape(queue) + "&num_jobs=" + url.QueryEscape(strconv.Itoa(int(num_jobs)))
 	var attempt int
 	for {
@@ -204,7 +204,7 @@ func (r *Client) Next(ctx context.Context, queue string, num_jobs uint32) ([]*Jo
 
 		switch resp.StatusCode {
 		case http.StatusOK:
-			var jobs []*Job
+			var jobs []*Job[P, S]
 			err := json.NewDecoder(resp.Body).Decode(&jobs)
 			if err != nil {
 				// connection must have been disrupted, continue to retrieve, the Job IF lost will
@@ -212,11 +212,11 @@ func (r *Client) Next(ctx context.Context, queue string, num_jobs uint32) ([]*Jo
 				continue
 			}
 
-			helpers := make([]*JobHelper, 0, len(jobs))
+			helpers := make([]*JobHelper[P, S], 0, len(jobs))
 
 			for _, j := range jobs {
 				j := j
-				helpers = append(helpers, &JobHelper{
+				helpers = append(helpers, &JobHelper[P, S]{
 					client:     r,
 					httpClient: r.client,
 					job:        j,
@@ -241,7 +241,7 @@ func (r *Client) Next(ctx context.Context, queue string, num_jobs uint32) ([]*Jo
 // NOTE: It does not matter if the Job is in-flight or not it will be removed. All relevant code paths return an
 //       ErrNotFound to handle such events within Job Workers so that they can bail gracefully if desired.
 //
-func (r *Client) Remove(ctx context.Context, queue, jobID string) error {
+func (r *Client[P, S]) Remove(ctx context.Context, queue, jobID string) error {
 	values := make(url.Values)
 	values.Set("job_id", jobID)
 	values.Set("queue", queue)
@@ -274,22 +274,22 @@ func (r *Client) Remove(ctx context.Context, queue, jobID string) error {
 
 // JobHelper is used to process an individual Job retrieved from the Job Server. It contains a number of helper methods
 // to `Heartbeat` and `Complete` Jobs.
-type JobHelper struct {
-	client     *Client
+type JobHelper[P any, S any] struct {
+	client     *Client[P, S]
 	httpClient *http.Client
 	cancel     context.CancelFunc
-	job        *Job
+	job        *Job[P, S]
 	wg         sync.WaitGroup
 }
 
 // Job returns the Job to process
-func (j *JobHelper) Job() *Job {
+func (j *JobHelper[P, S]) Job() *Job[P, S] {
 	return j.job
 }
 
 // HeartbeatAuto automatically calls the Job Runners heartbeat endpoint in a separate goroutine on the
 // provided interval. It is convenience to use this when no state needs to be saved but Job kept alive.
-func (j *JobHelper) HeartbeatAuto(ctx context.Context, interval time.Duration) {
+func (j *JobHelper[P, S]) HeartbeatAuto(ctx context.Context, interval time.Duration) {
 	ctx, cancel := context.WithCancel(ctx)
 	j.cancel = cancel
 	j.wg.Add(1)
@@ -316,7 +316,7 @@ func (j *JobHelper) HeartbeatAuto(ctx context.Context, interval time.Duration) {
 // Heartbeat calls the Job Runners heartbeat endpoint to keep the job alive.
 // Optional: It optionally accepts a state payload if desired to be used in case of failure for
 //           point-in-time restarting.
-func (j *JobHelper) Heartbeat(ctx context.Context, state json.RawMessage) error {
+func (j *JobHelper[P, S]) Heartbeat(ctx context.Context, state *S) error {
 
 	var err error
 	var req *http.Request
@@ -327,12 +327,17 @@ func (j *JobHelper) Heartbeat(ctx context.Context, state json.RawMessage) error 
 
 	url := j.client.heartbeatURL + "?" + values.Encode()
 
-	if len(state) > 0 {
-		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(state))
+	if state != nil {
+		var b []byte
+		b, err = json.Marshal(state)
+		if err != nil {
+			return errors.Wrap(err, "failed to marshal heartbeat state")
+		}
+
+		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(b))
 	} else {
 		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, url, nil)
 	}
-
 	if err != nil {
 		return errors.Wrap(err, "failed to create heartbeat request")
 	}
@@ -360,7 +365,7 @@ func (j *JobHelper) Heartbeat(ctx context.Context, state json.RawMessage) error 
 }
 
 // Reschedule submits the provided Job for processing by rescheduling an existing Job for another iteration.
-func (j *JobHelper) Reschedule(ctx context.Context, job Job) error {
+func (j *JobHelper[P, S]) Reschedule(ctx context.Context, job Job[P, S]) error {
 	b, err := json.Marshal(job)
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal job")
@@ -394,7 +399,7 @@ func (j *JobHelper) Reschedule(ctx context.Context, job Job) error {
 }
 
 // Complete marks the Job as complete. It does NOT matter to the Job Runner if the job was successful or not.
-func (j *JobHelper) Complete(ctx context.Context) error {
+func (j *JobHelper[P, S]) Complete(ctx context.Context) error {
 	if j.cancel != nil {
 		j.cancel()
 		j.wg.Wait()

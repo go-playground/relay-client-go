@@ -11,15 +11,15 @@ import (
 )
 
 // Enqueuer represents the enqueuer of Jobs.
-type Enqueuer interface {
-	Enqueue(context.Context, relay.Job) error
-	EnqueueBatch(context.Context, []relay.Job) error
+type Enqueuer[P any, S any] interface {
+	Enqueue(context.Context, relay.Job[P, S]) error
+	EnqueueBatch(context.Context, []relay.Job[P, S]) error
 }
 
 // Config contains all information needed to initialize a Producer.
-type Config struct {
+type Config[P any, S any, T Enqueuer[P, S]] struct {
 	// Enqueuer represents the enqueuer of Jobs. This can be the *relay.Client or other wrapper.
-	Enqueuer Enqueuer
+	Enqueuer T
 
 	// Backoff if the backoff used when calling `enqueue`.
 	// Optional: If not set a default backoff is used.
@@ -27,29 +27,26 @@ type Config struct {
 }
 
 // Producer is a wrapper around the low-level Relay Client to abstract away retrying and other bits.
-type Producer struct {
-	enqueuer Enqueuer
+type Producer[P any, S any, T Enqueuer[P, S]] struct {
+	enqueuer T
 	bo       backoff.Exponential
 }
 
 // New create a Producer for use.
-func New(cfg Config) (*Producer, error) {
-	if cfg.Enqueuer == nil {
-		return nil, errors.New("Enqueuer is required")
-	}
+func New[P any, S any, T Enqueuer[P, S]](cfg Config[P, S, T]) (*Producer[P, S, T], error) {
 	defaultBackoff := backoff.Exponential{}
 	if cfg.Backoff == defaultBackoff {
 		cfg.Backoff = backoff.NewExponential().Interval(time.Millisecond * 100).Jitter(time.Millisecond * 25).Max(time.Second).Init()
 	}
 
-	return &Producer{
+	return &Producer[P, S, T]{
 		enqueuer: cfg.Enqueuer,
 		bo:       cfg.Backoff,
 	}, nil
 }
 
 // Enqueue submits the provided Job for processing to the Job Server using the provided Enqueuer.
-func (p *Producer) Enqueue(ctx context.Context, job relay.Job) (err error) {
+func (p *Producer[P, S, T]) Enqueue(ctx context.Context, job relay.Job[P, S]) (err error) {
 	var attempt int
 	for {
 		if attempt > 0 {
@@ -70,7 +67,7 @@ func (p *Producer) Enqueue(ctx context.Context, job relay.Job) (err error) {
 }
 
 // EnqueueBatch submits multiple Jobs for processing to the Job Server in one call using the provided Enqueuer.
-func (p *Producer) EnqueueBatch(ctx context.Context, jobs []relay.Job) (err error) {
+func (p *Producer[P, S, T]) EnqueueBatch(ctx context.Context, jobs []relay.Job[P, S]) (err error) {
 	var attempt int
 	for {
 		if attempt > 0 {
