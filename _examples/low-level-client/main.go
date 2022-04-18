@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -10,9 +10,13 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+type payload struct {
+	Key string `json:"key"`
+}
+
 func main() {
 
-	relayClient, err := relay.New(relay.Config{
+	relayClient, err := relay.New[payload, struct{}](relay.Config{
 		BaseURL: "http://localhost:8080",
 	})
 	if err != nil {
@@ -20,7 +24,7 @@ func main() {
 	}
 
 	workers := 10
-	ch := make(chan *relay.JobHelper)
+	ch := make(chan *relay.JobHelper[payload, struct{}])
 	sem := semaphore.NewWeighted(int64(workers))
 	wg := new(sync.WaitGroup)
 	queue := "test-queue"
@@ -40,23 +44,23 @@ func main() {
 		if err != nil {
 			break
 		}
-		jh, err := relayClient.Next(ctx, queue)
+		jh, err := relayClient.Next(ctx, queue, 1)
 		if err != nil {
 			panic(err)
 		}
-		ch <- jh
+		ch <- jh[0]
 	}
 	close(ch)
 	wg.Wait()
 }
 
-func worker(sem *semaphore.Weighted, ch <-chan *relay.JobHelper) {
+func worker(sem *semaphore.Weighted, ch <-chan *relay.JobHelper[payload, struct{}]) {
 	for j := range ch {
 		process(sem, j)
 	}
 }
 
-func process(sem *semaphore.Weighted, helper *relay.JobHelper) {
+func process(sem *semaphore.Weighted, helper *relay.JobHelper[payload, struct{}]) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -70,8 +74,8 @@ func process(sem *semaphore.Weighted, helper *relay.JobHelper) {
 
 	helper.HeartbeatAuto(ctx, time.Second*5)
 
-	var myData string
-	_ = json.Unmarshal(helper.Job().Payload, &myData)
+	pl := helper.Job().Payload
 
-	// use myData
+	// use payload(pl)
+	fmt.Println(pl)
 }

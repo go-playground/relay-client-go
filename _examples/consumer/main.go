@@ -20,10 +20,14 @@ func init() {
 	rand.Seed(time.Now().UnixNano())
 }
 
+type payload struct {
+	Key string `json:"key"`
+}
+
 func main() {
 	ctx := context.Background()
 
-	client, err := relay.New(relay.Config{
+	client, err := relay.New[payload, struct{}](relay.Config{
 		BaseURL: "http://127.0.0.1:8080",
 	})
 	if err != nil {
@@ -32,11 +36,11 @@ func main() {
 
 	queue := "test-queue"
 
-	c, err := consumer.New(consumer.Config{
+	c, err := consumer.New(consumer.Config[payload, struct{}, *processor[payload, struct{}]]{
 		Workers:   20,
 		Pollers:   3,
 		Client:    client,
-		Processor: new(processor),
+		Processor: new(processor[payload, struct{}]),
 		Queue:     queue,
 	})
 	if err != nil {
@@ -64,12 +68,10 @@ func main() {
 	wg.Wait()
 }
 
-var _ consumer.Processor = (*processor)(nil)
-
-type processor struct {
+type processor[P any, S any] struct {
 }
 
-func (p processor) Process(ctx context.Context, helper *relay.JobHelper) error {
+func (p processor[P, S]) Process(ctx context.Context, helper *relay.JobHelper[P, S]) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

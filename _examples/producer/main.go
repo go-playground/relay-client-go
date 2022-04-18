@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -22,17 +21,18 @@ var (
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
-}
-
-func init() {
 	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 1024
 	http.DefaultTransport.(*http.Transport).MaxConnsPerHost = 1024
+}
+
+type payload struct {
+	Key string `json:"key"`
 }
 
 func main() {
 	ctx := context.Background()
 
-	client, err := relay.New(relay.Config{
+	client, err := relay.New[payload, struct{}](relay.Config{
 		BaseURL: "http://127.0.0.1:8080",
 	})
 	if err != nil {
@@ -41,7 +41,7 @@ func main() {
 
 	queue := "test-queue"
 
-	p, err := producer.New(producer.Config{
+	p, err := producer.New(producer.Config[payload, struct{}, *relay.Client[payload, struct{}]]{
 		Enqueuer: client,
 	})
 	if err != nil {
@@ -56,12 +56,12 @@ func main() {
 			defer wg.Done()
 
 			for {
-				err := p.Enqueue(ctx, relay.Job{
+				err := p.Enqueue(ctx, relay.Job[payload, struct{}]{
 					ID:         strconv.Itoa(rand.Intn(1_000_000_000)),
 					Queue:      queue,
 					Timeout:    30,
 					MaxRetries: 0,
-					Payload:    json.RawMessage(`{"key:":"I'm a little teapot"}`),
+					Payload:    payload{Key: "I'm a little teapot"},
 				})
 				if err != nil {
 					var e relay.ErrJobExits

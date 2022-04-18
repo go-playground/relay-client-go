@@ -8,6 +8,10 @@ Usage
 ------
 See [example here](/_examples).
 
+Requirements
+------------
+- Go 1.18+
+
 How to Contribute
 ------
 

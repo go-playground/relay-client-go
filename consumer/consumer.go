@@ -15,20 +15,20 @@ import (
 )
 
 // Processor represents a processor of Jobs
-type Processor interface {
+type Processor[P any, S any] interface {
 	// Process ...  Warning if returning an error it better be a fatal operational error
-	Process(context.Context, *relay.JobHelper) error
+	Process(context.Context, *relay.JobHelper[P, S]) error
 }
 
 // Config contains all configuration data to initialize a Consumer for use.
-type Config struct {
+type Config[P any, S any, T Processor[P, S]] struct {
 
-	// Workers represents the maximum number of Jobs that can be in-flight at one time by having a
+	// Workers represent the maximum number of Jobs that can be in-flight at one time by having a
 	// maximum number of workers.
 	// Default will be set to one.
 	Workers int
 
-	// Pollers indicates the maximum number of polling workers trying to retrieve Jobs for processing.
+	// Pollers indicate the maximum number of polling workers trying to retrieve Jobs for processing.
 	// this should only be tuned for consistent high-flow services for which a single poller becomes the
 	// bottleneck which is rare. This should never be set greater than the maximum number of workers and in
 	// most cases should be far less than.
@@ -40,13 +40,13 @@ type Config struct {
 	NoAutoComplete bool
 
 	// Processor is the main processor of Jobs.
-	Processor Processor
+	Processor T
 
 	// Queue is the Jbo Queue for which to pull jobs from for processing.
 	Queue string
 
 	// Client represents the pre-configured low-level relay client.
-	Client *relay.Client
+	Client *relay.Client[P, S]
 
 	// Backoff if the backoff used when calling the `next` or `complete` endpoint and there is no data yet
 	// available.
@@ -56,22 +56,19 @@ type Config struct {
 
 // Consumer is a wrapper around the low-level Relay Client to abstract away polling and distribution of Jobs
 // for processing.
-type Consumer struct {
-	processor    Processor
+type Consumer[P any, S any, T Processor[P, S]] struct {
+	processor    T
 	sem          *semaphore.Weighted
 	workers      int
 	pollers      int
 	queue        string
-	client       *relay.Client
+	client       *relay.Client[P, S]
 	bo           backoff.Exponential
 	autoComplete bool
 }
 
 // New initializes a new Consumer for use.
-func New(cfg Config) (*Consumer, error) {
-	if cfg.Processor == nil {
-		return nil, errors.New("Processor required")
-	}
+func New[P any, S any, T Processor[P, S]](cfg Config[P, S, T]) (*Consumer[P, S, T], error) {
 	if cfg.Queue == "" {
 		return nil, errors.New("Queue required")
 	}
@@ -94,7 +91,7 @@ func New(cfg Config) (*Consumer, error) {
 		cfg.Backoff = backoff.NewExponential().Interval(time.Millisecond * 100).Jitter(time.Millisecond * 25).Max(time.Second).Init()
 	}
 
-	return &Consumer{
+	return &Consumer[P, S, T]{
 		processor:    cfg.Processor,
 		sem:          semaphore.NewWeighted(int64(cfg.Workers)),
 		workers:      cfg.Workers,
@@ -107,9 +104,9 @@ func New(cfg Config) (*Consumer, error) {
 }
 
 // Start initializes the workers and starts polling for new jobs.
-func (c *Consumer) Start(ctx context.Context) (err error) {
+func (c *Consumer[P, S, T]) Start(ctx context.Context) (err error) {
 	wg := new(sync.WaitGroup)
-	ch := make(chan *relay.JobHelper, c.workers)
+	ch := make(chan *relay.JobHelper[P, S], c.workers)
 
 	for i := 0; i < c.workers; i++ {
 		wg.Add(1)
@@ -140,7 +137,7 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 	return
 }
 
-func (c *Consumer) poller(ctx context.Context, ch chan<- *relay.JobHelper) (err error) {
+func (c *Consumer[P, S, T]) poller(ctx context.Context, ch chan<- *relay.JobHelper[P, S]) (err error) {
 	var numJobs uint32
 	for {
 		//numJobs = 0
@@ -158,7 +155,7 @@ func (c *Consumer) poller(ctx context.Context, ch chan<- *relay.JobHelper) (err 
 		}
 
 		// TODO: refactor usage of semaphore to be able to know how many jobs we can automatically query in one go :)
-		var helpers []*relay.JobHelper
+		var helpers []*relay.JobHelper[P, S]
 		helpers, err = c.client.Next(ctx, c.queue, numJobs)
 		if err != nil {
 			// check for lower level network errors, timeouts, ... and retry automatically
@@ -178,7 +175,7 @@ func (c *Consumer) poller(ctx context.Context, ch chan<- *relay.JobHelper) (err 
 	return
 }
 
-func (c *Consumer) worker(ctx context.Context, ch <-chan *relay.JobHelper) error {
+func (c *Consumer[P, S, T]) worker(ctx context.Context, ch <-chan *relay.JobHelper[P, S]) error {
 	for helper := range ch {
 		if err := c.process(ctx, helper); err != nil {
 			return errors.Wrap(err, "processing error")
@@ -187,7 +184,7 @@ func (c *Consumer) worker(ctx context.Context, ch <-chan *relay.JobHelper) error
 	return nil
 }
 
-func (c *Consumer) process(ctx context.Context, helper *relay.JobHelper) error {
+func (c *Consumer[P, S, T]) process(ctx context.Context, helper *relay.JobHelper[P, S]) error {
 	defer func() {
 		c.sem.Release(1)
 	}()
@@ -203,7 +200,7 @@ func (c *Consumer) process(ctx context.Context, helper *relay.JobHelper) error {
 	return nil
 }
 
-func (c *Consumer) complete(ctx context.Context, helper *relay.JobHelper) (err error) {
+func (c *Consumer[P, S, T]) complete(ctx context.Context, helper *relay.JobHelper[P, S]) (err error) {
 	var attempt int
 	for {
 		if attempt > 0 {
