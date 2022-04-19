@@ -140,8 +140,7 @@ func (c *Consumer[P, S, T]) Start(ctx context.Context) (err error) {
 func (c *Consumer[P, S, T]) poller(ctx context.Context, ch chan<- *relay.JobHelper[P, S]) (err error) {
 	var numJobs uint32
 	for {
-		//numJobs = 0
-		if numJobs == 0 {
+		if numJobs <= 0 {
 			err = c.sem.Acquire(ctx, 1)
 			if err != nil {
 				break
@@ -154,13 +153,11 @@ func (c *Consumer[P, S, T]) poller(ctx context.Context, ch chan<- *relay.JobHelp
 			numJobs++
 		}
 
-		// TODO: refactor usage of semaphore to be able to know how many jobs we can automatically query in one go :)
 		var helpers []*relay.JobHelper[P, S]
 		helpers, err = c.client.Next(ctx, c.queue, numJobs)
 		if err != nil {
 			// check for lower level network errors, timeouts, ... and retry automatically
 			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
-				c.sem.Release(1)
 				continue
 			}
 			err = errors.Wrap(err, "failed to fetch next Job")
