@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -11,7 +12,6 @@ import (
 	errorsext "github.com/go-playground/pkg/v5/errors"
 	"github.com/go-playground/relay-client-go"
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/sync/semaphore"
 )
 
 // Processor represents a processor of Jobs
@@ -58,7 +58,7 @@ type Config[P any, S any, T Processor[P, S]] struct {
 // for processing.
 type Consumer[P any, S any, T Processor[P, S]] struct {
 	processor    T
-	sem          *semaphore.Weighted
+	sem          chan struct{}
 	workers      int
 	pollers      int
 	queue        string
@@ -93,7 +93,7 @@ func New[P any, S any, T Processor[P, S]](cfg Config[P, S, T]) (*Consumer[P, S, 
 
 	return &Consumer[P, S, T]{
 		processor:    cfg.Processor,
-		sem:          semaphore.NewWeighted(int64(cfg.Workers)),
+		sem:          make(chan struct{}, cfg.Workers),
 		workers:      cfg.Workers,
 		pollers:      cfg.Pollers,
 		queue:        cfg.Queue,
@@ -134,26 +134,39 @@ func (c *Consumer[P, S, T]) Start(ctx context.Context) (err error) {
 
 	close(ch)
 	wg.Wait() // wait for all consumers/processors to finish
+	close(c.sem)
 	return
 }
 
 func (c *Consumer[P, S, T]) poller(ctx context.Context, ch chan<- *relay.JobHelper[P, S]) (err error) {
 	var numJobs uint32
 	for {
-		if numJobs <= 0 {
-			err = c.sem.Acquire(ctx, 1)
-			if err != nil {
-				break
+		if numJobs == 0 {
+			//fmt.Println("Aquiring blocking")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case c.sem <- struct{}{}:
+				numJobs++
 			}
-			numJobs++
 		}
 
 		//attempt to maximize acquires into number of Jobs to try and pull.
-		for c.sem.TryAcquire(1) {
-			numJobs++
+	FOR:
+		for {
+			//fmt.Println("Aquiring non-blocking")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case c.sem <- struct{}{}:
+				numJobs++
+			default:
+				break FOR
+			}
 		}
 
 		var helpers []*relay.JobHelper[P, S]
+		//fmt.Println("Fetching:", numJobs)
 		helpers, err = c.client.Next(ctx, c.queue, numJobs)
 		if err != nil {
 			// check for lower level network errors, timeouts, ... and retry automatically
@@ -163,8 +176,12 @@ func (c *Consumer[P, S, T]) poller(ctx context.Context, ch chan<- *relay.JobHelp
 			err = errors.Wrap(err, "failed to fetch next Job")
 			break
 		}
+		//fmt.Println("Fetched:", len(helpers))
 		for _, jh := range helpers {
 			ch <- jh
+		}
+		if uint32(len(helpers)) > numJobs {
+			panic(fmt.Sprintf("helpers: %d num: %d", len(helpers), numJobs))
 		}
 		numJobs = uint32(int(numJobs) - len(helpers))
 		continue
@@ -183,7 +200,9 @@ func (c *Consumer[P, S, T]) worker(ctx context.Context, ch <-chan *relay.JobHelp
 
 func (c *Consumer[P, S, T]) process(ctx context.Context, helper *relay.JobHelper[P, S]) error {
 	defer func() {
-		c.sem.Release(1)
+		//fmt.Println("releasing")
+		<-c.sem
+		//fmt.Println("released")
 	}()
 
 	err := c.processor.Process(ctx, helper)
