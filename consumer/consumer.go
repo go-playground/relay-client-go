@@ -201,7 +201,12 @@ func (c *Consumer[P, S, T]) worker(ctx context.Context, ch <-chan *relay.JobHelp
 func (c *Consumer[P, S, T]) process(ctx context.Context, helper *relay.JobHelper[P, S]) error {
 	defer func() {
 		//fmt.Println("releasing")
-		<-c.sem
+		select {
+		case <-c.sem:
+		default:
+			panic("semaphore released too many times")
+		}
+
 		//fmt.Println("released")
 	}()
 
