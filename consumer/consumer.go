@@ -181,7 +181,7 @@ func (c *Consumer[P, S, T]) poller(ctx context.Context, ch chan<- *relay.JobHelp
 			ch <- jh
 		}
 		if uint32(len(helpers)) > numJobs {
-			panic(fmt.Sprintf("helpers: %d num: %d", len(helpers), numJobs))
+			panic(fmt.Sprintf("helpers: %d num: %d %#v", len(helpers), numJobs, helpers))
 		}
 		numJobs = uint32(int(numJobs) - len(helpers))
 		continue
@@ -201,12 +201,7 @@ func (c *Consumer[P, S, T]) worker(ctx context.Context, ch <-chan *relay.JobHelp
 func (c *Consumer[P, S, T]) process(ctx context.Context, helper *relay.JobHelper[P, S]) error {
 	defer func() {
 		//fmt.Println("releasing")
-		select {
-		case <-c.sem:
-		default:
-			panic("semaphore released too many times")
-		}
-
+		<-c.sem
 		//fmt.Println("released")
 	}()
 

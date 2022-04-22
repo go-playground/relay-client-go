@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -204,12 +205,23 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 
 		switch resp.StatusCode {
 		case http.StatusOK:
-			var jobs []*Job[P, S]
-			err := json.NewDecoder(resp.Body).Decode(&jobs)
+			b, err := io.ReadAll(resp.Body)
 			if err != nil {
 				// connection must have been disrupted, continue to retrieve, the Job IF lost will
 				// be retried.
 				continue
+			}
+			var jobs []*Job[P, S]
+			//err := json.NewDecoder(resp.Body).Decode(&jobs)
+			err = json.Unmarshal(b, &jobs)
+			if err != nil {
+				// connection must have been disrupted, continue to retrieve, the Job IF lost will
+				// be retried.
+				continue
+			}
+
+			if len(jobs) != int(num_jobs) {
+				panic("len(jobs) !=num_jobs" + string(b))
 			}
 
 			helpers := make([]*JobHelper[P, S], 0, len(jobs))
@@ -224,6 +236,11 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 			}
 			return helpers, nil
 		default:
+
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				return nil, errors.Newf("invalid request, status code: %d", resp.StatusCode)
+			}
+
 			// includes http.StatusNoContent and http.TooManyRequests
 			// no new jobs to process
 			if err := r.bo.Sleep(ctx, attempt); err != nil {
@@ -253,6 +270,9 @@ func (r *Client[P, S]) Remove(ctx context.Context, queue, jobID string) error {
 
 	resp, err := r.client.Do(req)
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return retryableErr{err: errors.New("Temporary error occurred EOF")}
+		}
 		return errors.Wrap(err, "failed to make complete request")
 	}
 	defer resp.Body.Close()
