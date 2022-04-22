@@ -220,8 +220,8 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 				continue
 			}
 
-			if len(jobs) != int(num_jobs) {
-				panic("len(jobs) !=num_jobs" + string(b))
+			if len(jobs) > int(num_jobs) {
+				fmt.Printf("len(jobs) %d !=num_jobs %d: %s", len(jobs), num_jobs, string(b))
 			}
 
 			helpers := make([]*JobHelper[P, S], 0, len(jobs))
@@ -437,8 +437,8 @@ func (r retryableErr) Error() string {
 	return r.err.Error()
 }
 
-// IsTemporary denotes if this error is retryable.
-func (r retryableErr) IsTemporary() bool {
+// Temporary denotes if this error is retryable.
+func (r retryableErr) Temporary() bool {
 	return true
 }
 
