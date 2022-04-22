@@ -2,7 +2,6 @@ package consumer
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -142,7 +141,6 @@ func (c *Consumer[P, S, T]) poller(ctx context.Context, ch chan<- *relay.JobHelp
 	var numJobs uint32
 	for {
 		if numJobs == 0 {
-			//fmt.Println("Aquiring blocking")
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -154,7 +152,6 @@ func (c *Consumer[P, S, T]) poller(ctx context.Context, ch chan<- *relay.JobHelp
 		//attempt to maximize acquires into number of Jobs to try and pull.
 	FOR:
 		for {
-			//fmt.Println("Aquiring non-blocking")
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -166,7 +163,7 @@ func (c *Consumer[P, S, T]) poller(ctx context.Context, ch chan<- *relay.JobHelp
 		}
 
 		var helpers []*relay.JobHelper[P, S]
-		//fmt.Println("Fetching:", numJobs)
+
 		helpers, err = c.client.Next(ctx, c.queue, numJobs)
 		if err != nil {
 			// check for lower level network errors, timeouts, ... and retry automatically
@@ -176,14 +173,9 @@ func (c *Consumer[P, S, T]) poller(ctx context.Context, ch chan<- *relay.JobHelp
 			err = errors.Wrap(err, "failed to fetch next Job")
 			break
 		}
-		//fmt.Println("Fetched:", len(helpers))
 
 		for _, jh := range helpers {
 			ch <- jh
-			//numJobs--
-		}
-		if uint32(len(helpers)) > numJobs {
-			fmt.Printf("helpers: %d num: %d %#v", len(helpers), numJobs, helpers)
 		}
 		numJobs = uint32(int(numJobs) - len(helpers))
 		continue
@@ -202,13 +194,11 @@ func (c *Consumer[P, S, T]) worker(ctx context.Context, ch <-chan *relay.JobHelp
 
 func (c *Consumer[P, S, T]) process(ctx context.Context, helper *relay.JobHelper[P, S]) error {
 	defer func() {
-		//fmt.Println("releasing")
 		select {
 		case <-c.sem:
 		default:
-			panic("semaphore released too many times")
+			panic("application is out-of-sync, more Jobs running than were requested")
 		}
-		//fmt.Println("released")
 	}()
 
 	err := c.processor.Process(ctx, helper)

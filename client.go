@@ -205,23 +205,12 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 
 		switch resp.StatusCode {
 		case http.StatusOK:
-			b, err := io.ReadAll(resp.Body)
-			if err != nil {
-				// connection must have been disrupted, continue to retrieve, the Job IF lost will
-				// be retried.
-				continue
-			}
 			var jobs []*Job[P, S]
-			//err := json.NewDecoder(resp.Body).Decode(&jobs)
-			err = json.Unmarshal(b, &jobs)
+			err := json.NewDecoder(resp.Body).Decode(&jobs)
 			if err != nil {
 				// connection must have been disrupted, continue to retrieve, the Job IF lost will
 				// be retried.
 				continue
-			}
-
-			if len(jobs) > int(num_jobs) {
-				fmt.Printf("len(jobs) %d !=num_jobs %d: %s", len(jobs), num_jobs, string(b))
 			}
 
 			helpers := make([]*JobHelper[P, S], 0, len(jobs))
