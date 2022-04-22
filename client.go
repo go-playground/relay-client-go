@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -224,6 +225,11 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 			}
 			return helpers, nil
 		default:
+
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				return nil, errors.Newf("invalid request, status code: %d", resp.StatusCode)
+			}
+
 			// includes http.StatusNoContent and http.TooManyRequests
 			// no new jobs to process
 			if err := r.bo.Sleep(ctx, attempt); err != nil {
@@ -253,6 +259,9 @@ func (r *Client[P, S]) Remove(ctx context.Context, queue, jobID string) error {
 
 	resp, err := r.client.Do(req)
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return retryableErr{err: errors.New("Temporary error occurred EOF")}
+		}
 		return errors.Wrap(err, "failed to make complete request")
 	}
 	defer resp.Body.Close()
@@ -417,8 +426,8 @@ func (r retryableErr) Error() string {
 	return r.err.Error()
 }
 
-// IsTemporary denotes if this error is retryable.
-func (r retryableErr) IsTemporary() bool {
+// Temporary denotes if this error is retryable.
+func (r retryableErr) Temporary() bool {
 	return true
 }
 
