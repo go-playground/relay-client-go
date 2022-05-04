@@ -161,13 +161,13 @@ func (r *Client[P, S]) EnqueueBatch(ctx context.Context, jobs []Job[P, S]) error
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.enqueueBatchURL, bytes.NewReader(b))
 	if err != nil {
-		return errors.Wrap(err, "failed to create enqueue request")
+		return errors.Wrap(err, "failed to create enqueue batch request")
 	}
 	req.Header.Set(httpext.ContentType, httpext.ApplicationJSON)
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return errors.Wrap(err, "failed to make enqueue request")
+		return errors.Wrap(err, "failed to make enqueue batch request")
 	}
 	defer resp.Body.Close()
 
@@ -194,12 +194,12 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, nextURL, nil)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to create heartbeat request")
+			return nil, errors.Wrap(err, "failed to create next request")
 		}
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to make heartbeat request")
+			return nil, errors.Wrap(err, "failed to make next request")
 		}
 		defer resp.Body.Close()
 
