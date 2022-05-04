@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-playground/backoff-sys"
 	"github.com/go-playground/errors/v5"
+	errorsext "github.com/go-playground/pkg/v5/errors"
 	httpext "github.com/go-playground/pkg/v5/net/http"
 	unsafeext "github.com/go-playground/pkg/v5/unsafe"
 )
@@ -62,6 +63,9 @@ type Config struct {
 	// Optional: If not set a default backoff is used.
 	NextBackoff backoff.Exponential
 
+	// RetryBackoff is the backoff used when calling any of the retryable functions.
+	RetryBackoff backoff.Exponential
+
 	// Client is the HTTP Client to use if using a custom one is desired.
 	// Optional: If not set it will create a new one cloning the `http.DefaultTransport` and tweaking the settings
 	//           for use with sane limits & Defaults.
@@ -76,7 +80,8 @@ type Client[P any, S any] struct {
 	rescheduleURL   string
 	completeURL     string
 	nextURL         string
-	bo              backoff.Exponential
+	nextBo          backoff.Exponential
+	retryBo         backoff.Exponential
 	client          *http.Client
 }
 
@@ -92,6 +97,10 @@ func New[P any, S any](cfg Config) (*Client[P, S], error) {
 	defaultBackoff := backoff.Exponential{}
 	if cfg.NextBackoff == defaultBackoff {
 		cfg.NextBackoff = backoff.NewExponential().Interval(time.Millisecond * 100).Jitter(time.Millisecond * 25).Max(time.Second).Init()
+	}
+
+	if cfg.RetryBackoff == defaultBackoff {
+		cfg.RetryBackoff = backoff.NewExponential().Interval(time.Millisecond * 100).Jitter(time.Millisecond * 25).Max(time.Second).Init()
 	}
 
 	if cfg.Client == nil {
@@ -112,7 +121,8 @@ func New[P any, S any](cfg Config) (*Client[P, S], error) {
 		rescheduleURL:   fmt.Sprintf("%s/reschedule", base),
 		completeURL:     fmt.Sprintf("%s/complete", base),
 		nextURL:         fmt.Sprintf("%s/next", base),
-		bo:              cfg.NextBackoff,
+		nextBo:          cfg.NextBackoff,
+		retryBo:         cfg.RetryBackoff,
 		client:          cfg.Client,
 	}
 	return r, nil
@@ -161,13 +171,13 @@ func (r *Client[P, S]) EnqueueBatch(ctx context.Context, jobs []Job[P, S]) error
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.enqueueBatchURL, bytes.NewReader(b))
 	if err != nil {
-		return errors.Wrap(err, "failed to create enqueue request")
+		return errors.Wrap(err, "failed to create enqueue batch request")
 	}
 	req.Header.Set(httpext.ContentType, httpext.ApplicationJSON)
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return errors.Wrap(err, "failed to make enqueue request")
+		return errors.Wrap(err, "failed to make enqueue batch request")
 	}
 	defer resp.Body.Close()
 
@@ -194,12 +204,12 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, nextURL, nil)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to create heartbeat request")
+			return nil, errors.Wrap(err, "failed to create next request")
 		}
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to make heartbeat request")
+			return nil, errors.Wrap(err, "failed to make next request")
 		}
 		defer resp.Body.Close()
 
@@ -232,7 +242,7 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 
 			// includes http.StatusNoContent and http.TooManyRequests
 			// no new jobs to process
-			if err := r.bo.Sleep(ctx, attempt); err != nil {
+			if err := r.nextBo.Sleep(ctx, attempt); err != nil {
 				// only context.Cancel as error ever
 				return nil, err
 			}
@@ -278,6 +288,27 @@ func (r *Client[P, S]) Remove(ctx context.Context, queue, jobID string) error {
 		}
 		b, _ := ioutil.ReadAll(resp.Body)
 		return errors.Newf("error: %s", unsafeext.BytesToString(b))
+	}
+}
+
+func (r *Client[P, S]) removeRetryable(ctx context.Context, queue, jobID string) error {
+	var attempts int
+	for {
+		if attempts > 0 {
+			if err := r.retryBo.Sleep(ctx, attempts); err != nil {
+				// can only occur if context cancelled or timout
+				return err
+			}
+		}
+		err := r.Remove(ctx, queue, jobID)
+		if err != nil {
+			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
+				attempts++
+				continue
+			}
+			return errors.Wrap(err, "failed to remove job")
+		}
+		return nil
 	}
 }
 
@@ -407,13 +438,52 @@ func (j *JobHelper[P, S]) Reschedule(ctx context.Context, job Job[P, S]) error {
 	}
 }
 
+// RescheduleWithRetry is the same as Reschedule but automatically retries on transient errors.
+func (j *JobHelper[P, S]) RescheduleWithRetry(ctx context.Context, job Job[P, S]) error {
+	var attempts int
+	for {
+		if attempts > 0 {
+			if err := j.client.retryBo.Sleep(ctx, attempts); err != nil {
+				// can only occur if context cancelled or timout
+				return err
+			}
+		}
+		err := j.Reschedule(ctx, job)
+		if err != nil {
+			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
+				attempts++
+				continue
+			}
+			return errors.Wrap(err, "failed to reschedule job")
+		}
+		return nil
+	}
+}
+
 // Complete marks the Job as complete. It does NOT matter to the Job Runner if the job was successful or not.
 func (j *JobHelper[P, S]) Complete(ctx context.Context) error {
 	if j.cancel != nil {
 		j.cancel()
 		j.wg.Wait()
 	}
-	return j.client.Remove(ctx, j.Job().Queue, j.Job().ID)
+	err := j.client.Remove(ctx, j.Job().Queue, j.Job().ID)
+	if err != nil {
+		return errors.Wrap(err, "failed to complete job")
+	}
+	return nil
+}
+
+// CompleteWithRetry is the same as Complete but also automatically retries on transient errors.
+func (j *JobHelper[P, S]) CompleteWithRetry(ctx context.Context) error {
+	if j.cancel != nil {
+		j.cancel()
+		j.wg.Wait()
+	}
+	err := j.client.removeRetryable(ctx, j.Job().Queue, j.Job().ID)
+	if err != nil {
+		return errors.Wrap(err, "failed to complete job")
+	}
+	return nil
 }
 
 // denotes a retryable error by implementing the `IsTemporary` function.

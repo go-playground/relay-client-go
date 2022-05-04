@@ -34,9 +34,8 @@ type Config[P any, S any, T Processor[P, S]] struct {
 	// By default, there will only be one poller which should be all you need 99.99999% of the time.
 	Pollers int
 
-	// NoAutoComplete turns off auto-completion of a Job that is processed without error allowing
-	// the Processor full control to complete or not as necessary.
-	NoAutoComplete bool
+	// EnableAutocomplete turns on auto-completion of a Job that is processed without error.
+	EnableAutocomplete bool
 
 	// Processor is the main processor of Jobs.
 	Processor T
@@ -98,7 +97,7 @@ func New[P any, S any, T Processor[P, S]](cfg Config[P, S, T]) (*Consumer[P, S, 
 		queue:        cfg.Queue,
 		client:       cfg.Client,
 		bo:           cfg.Backoff,
-		autoComplete: !cfg.NoAutoComplete,
+		autoComplete: cfg.EnableAutocomplete,
 	}, nil
 }
 
@@ -112,7 +111,7 @@ func (c *Consumer[P, S, T]) Start(ctx context.Context) (err error) {
 		go func() {
 			defer wg.Done()
 			err := c.worker(ctx, ch)
-			if err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				log.Fatal(errors.Wrap(err, "issue encountered processing Jobs"))
 			}
 		}()
