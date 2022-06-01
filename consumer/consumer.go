@@ -206,28 +206,7 @@ func (c *Consumer[P, S, T]) process(ctx context.Context, helper *relay.JobHelper
 	}
 
 	if c.autoComplete {
-		return c.complete(ctx, helper)
+		return helper.CompleteWithRetry(ctx)
 	}
 	return nil
-}
-
-func (c *Consumer[P, S, T]) complete(ctx context.Context, helper *relay.JobHelper[P, S]) (err error) {
-	var attempt int
-	for {
-		if attempt > 0 {
-			if err = c.bo.Sleep(ctx, attempt); err != nil {
-				// can only happen if context cancelled or timed out
-				return err
-			}
-		}
-		err = helper.Complete(ctx)
-		if err != nil {
-			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
-				attempt++
-				continue
-			}
-			return errors.Wrap(err, "failed to complete Job")
-		}
-		return nil
-	}
 }
