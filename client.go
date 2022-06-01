@@ -236,18 +236,18 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 			return helpers, nil
 		default:
 
-			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-				return nil, errors.Newf("invalid request, status code: %d", resp.StatusCode)
+			if resp.StatusCode == http.StatusNoContent || httpext.IsRetryableStatusCode(resp.StatusCode) {
+				// includes http.StatusNoContent and http.TooManyRequests
+				// no new jobs to process
+				if err := r.nextBo.Sleep(ctx, attempt); err != nil {
+					// only context.Cancel as error ever
+					return nil, err
+				}
+				attempt++
+				continue
 			}
 
-			// includes http.StatusNoContent and http.TooManyRequests
-			// no new jobs to process
-			if err := r.nextBo.Sleep(ctx, attempt); err != nil {
-				// only context.Cancel as error ever
-				return nil, err
-			}
-			attempt++
-			continue
+			return nil, errors.Newf("invalid request, status code: %d", resp.StatusCode)
 		}
 	}
 }
