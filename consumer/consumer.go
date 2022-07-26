@@ -111,7 +111,17 @@ func (c *Consumer[P, S, T]) Start(ctx context.Context) (err error) {
 		go func() {
 			defer wg.Done()
 			err := c.worker(ctx, ch)
-			if err != nil && !errors.Is(err, context.Canceled) {
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					// double check it our context we passed in that got cancelled and not some inner
+					// one through mis-use. Protect people from themselves.
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						log.Fatal(errors.Wrap(err, "issue encountered processing Jobs. It appears to be a misuse of the context.Context."))
+					}
+				}
 				log.Fatal(errors.Wrap(err, "issue encountered processing Jobs"))
 			}
 		}()
