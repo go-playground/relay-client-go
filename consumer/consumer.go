@@ -202,7 +202,9 @@ func (c *Consumer[P, S, T]) worker(ctx context.Context, ch <-chan *relay.JobHelp
 }
 
 func (c *Consumer[P, S, T]) process(ctx context.Context, helper *relay.JobHelper[P, S]) error {
+	ctx, cancel := context.WithCancel(ctx)
 	defer func() {
+		cancel()
 		select {
 		case <-c.sem:
 		default:
