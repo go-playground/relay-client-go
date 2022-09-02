@@ -51,6 +51,10 @@ type Job[P any, S any] struct {
 	// future. This option should mainly be used for one-time jobs and scheduled jobs that have
 	// the option of being self-perpetuated in combination with the reschedule endpoint.
 	RunAt *time.Time `json:"run_at,omitempty"`
+
+	// UpdatedAt indicates last time the Job was updated either through enqueue, reschedule or heartbeat.
+	// This value is for reporting purposes only and will be ignored when enqueuing and rescheduling.
+	UpdatedAt *time.Time `json:"updated_at"`
 }
 
 // Config contains all information to create a new REaly instance fo use.
