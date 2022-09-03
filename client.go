@@ -316,8 +316,8 @@ func (r *Client[P, S]) Exists(ctx context.Context, queue, jobID string) (bool, e
 	}
 }
 
-// ExistsRetryable is the same as Exits only automatically handles retryable errors.
-func (r *Client[P, S]) ExistsRetryable(ctx context.Context, queue, jobID string) (bool, error) {
+// ExistsWithRetry is the same as Exits only automatically handles retryable errors.
+func (r *Client[P, S]) ExistsWithRetry(ctx context.Context, queue, jobID string) (bool, error) {
 	var attempts int
 	for {
 		if attempts > 0 {
@@ -378,8 +378,8 @@ func (r *Client[P, S]) Get(ctx context.Context, queue, jobID string) (*Job[P, S]
 	}
 }
 
-// GetRetryable is the same as Get only automatically handles retryable errors.
-func (r *Client[P, S]) GetRetryable(ctx context.Context, queue, jobID string) (*Job[P, S], error) {
+// GetWithRetry is the same as Get only automatically handles retryable errors.
+func (r *Client[P, S]) GetWithRetry(ctx context.Context, queue, jobID string) (*Job[P, S], error) {
 	var attempts int
 	for {
 		if attempts > 0 {
