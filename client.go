@@ -77,10 +77,9 @@ type Config struct {
 
 // Client is used to interact with the Client Job Server.
 type Client[P any, S any] struct {
-	enqueueURL    string
+	baseJobsURL   string
 	heartbeatURL  string
 	rescheduleURL string
-	completeURL   string
 	nextURL       string
 	nextBo        backoff.Exponential
 	retryBo       backoff.Exponential
@@ -117,10 +116,9 @@ func New[P any, S any](cfg Config) (*Client[P, S], error) {
 	}
 
 	r := &Client[P, S]{
-		enqueueURL:    fmt.Sprintf("%s/v1/jobs", base),
+		baseJobsURL:   fmt.Sprintf("%s/v1/jobs", base),
 		heartbeatURL:  fmt.Sprintf("%s/v1/jobs/heartbeat", base),
 		rescheduleURL: fmt.Sprintf("%s/v1/jobs/reschedule", base),
-		completeURL:   fmt.Sprintf("%s/v1/jobs", base),
 		nextURL:       fmt.Sprintf("%s/v1/jobs/next", base),
 		nextBo:        cfg.NextBackoff,
 		retryBo:       cfg.RetryBackoff,
@@ -141,7 +139,7 @@ func (r *Client[P, S]) EnqueueBatch(ctx context.Context, jobs []Job[P, S]) error
 		return errors.Wrap(err, "failed to marshal jobs")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.enqueueURL, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.baseJobsURL, bytes.NewReader(b))
 	if err != nil {
 		return errors.Wrap(err, "failed to create enqueue batch request")
 	}
@@ -234,7 +232,7 @@ func (r *Client[P, S]) Remove(ctx context.Context, queue, jobID string) error {
 	values.Set("id", jobID)
 	values.Set("queue", queue)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, r.completeURL+"?"+values.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, r.baseJobsURL+"?"+values.Encode(), nil)
 	if err != nil {
 		return errors.Wrap(err, "failed to create complete request")
 	}
@@ -281,6 +279,124 @@ func (r *Client[P, S]) removeRetryable(ctx context.Context, queue, jobID string)
 			return errors.Wrap(err, "failed to remove job")
 		}
 		return nil
+	}
+}
+
+// Exists checks if a Job exists.
+func (r *Client[P, S]) Exists(ctx context.Context, queue, jobID string) (bool, error) {
+	values := make(url.Values)
+	values.Set("id", jobID)
+	values.Set("queue", queue)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, r.baseJobsURL+"?"+values.Encode(), nil)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to create complete request")
+	}
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return false, retryableErr{err: errors.New("Temporary error occurred EOF")}
+		}
+		return false, errors.Wrap(err, "failed to make complete request")
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		if httpext.IsRetryableStatusCode(resp.StatusCode) {
+			return false, retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
+		}
+		b, _ := io.ReadAll(resp.Body)
+		return false, errors.Newf("error: %s", unsafeext.BytesToString(b))
+	}
+}
+
+// ExistsRetryable is the same as Exits only automatically handles retryable errors.
+func (r *Client[P, S]) ExistsRetryable(ctx context.Context, queue, jobID string) (bool, error) {
+	var attempts int
+	for {
+		if attempts > 0 {
+			if err := r.retryBo.Sleep(ctx, attempts); err != nil {
+				// can only occur if context cancelled or timout
+				return false, err
+			}
+		}
+		exists, err := r.Exists(ctx, queue, jobID)
+		if err != nil {
+			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
+				attempts++
+				continue
+			}
+			return false, errors.Wrap(err, "failed to remove job")
+		}
+		return exists, nil
+	}
+}
+
+// Get retrieves a Job from the database for debugging or usage of state data.
+func (r *Client[P, S]) Get(ctx context.Context, queue, jobID string) (*Job[P, S], error) {
+	values := make(url.Values)
+	values.Set("id", jobID)
+	values.Set("queue", queue)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseJobsURL+"?"+values.Encode(), nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create complete request")
+	}
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, retryableErr{err: errors.New("Temporary error occurred EOF")}
+		}
+		return nil, errors.Wrap(err, "failed to make complete request")
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var job *Job[P, S]
+		err := json.NewDecoder(resp.Body).Decode(&job)
+		if err != nil {
+			// must assume this is retryable, must be a broken connection
+			return nil, retryableErr{err: err}
+		}
+		return job, nil
+	case http.StatusNotFound:
+		return nil, ErrNotFound{message: fmt.Sprintf("Job could not be found within queue: %s with id: %s", queue, jobID)}
+	default:
+		if httpext.IsRetryableStatusCode(resp.StatusCode) {
+			return nil, retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
+		}
+		b, _ := io.ReadAll(resp.Body)
+		return nil, errors.Newf("error: %s", unsafeext.BytesToString(b))
+	}
+}
+
+// GetRetryable is the same as Get only automatically handles retryable errors.
+func (r *Client[P, S]) GetRetryable(ctx context.Context, queue, jobID string) (*Job[P, S], error) {
+	var attempts int
+	for {
+		if attempts > 0 {
+			if err := r.retryBo.Sleep(ctx, attempts); err != nil {
+				// can only occur if context cancelled or timout
+				return nil, err
+			}
+		}
+		job, err := r.Get(ctx, queue, jobID)
+		if err != nil {
+			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
+				attempts++
+				continue
+			}
+			return nil, errors.Wrap(err, "failed to remove job")
+		}
+		return job, nil
 	}
 }
 
