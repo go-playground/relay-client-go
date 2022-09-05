@@ -32,8 +32,8 @@ jobs:
         ports:
           - 8080:8080
         env:
-          RUST_LOG=debug
-          DATABASE_URL="postgres://username:pass@postgres:5432/relay?sslmode=disable"
+          RUST_LOG: debug
+          DATABASE_URL: "postgres://username:pass@postgres:5432/relay?sslmode=disable"
     steps:
       - name: Install Go
         uses: actions/setup-go@v2
