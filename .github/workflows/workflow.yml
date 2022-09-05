@@ -11,6 +11,29 @@ jobs:
         go-version: [1.18.x]
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    services:
+      postgres:
+        image: postgres:13-alpine
+        ports:
+          - 5432
+        env:
+          POSTGRES_USER: username
+          POSTGRES_PASS: pass
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: relay
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      relay:
+        image: ghcr.io/rust-playground/relay-rs:0.9.0
+        ports:
+          - 8080:8080
+        env:
+          RUST_LOG=debug
+          DATABASE_URL="postgres://username:pass@postgres:5432/relay?sslmode=disable"
     steps:
       - name: Install Go
         uses: actions/setup-go@v2
