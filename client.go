@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +50,10 @@ type Job[P any, S any] struct {
 	// future. This option should mainly be used for one-time jobs and scheduled jobs that have
 	// the option of being self-perpetuated in combination with the reschedule endpoint.
 	RunAt *time.Time `json:"run_at,omitempty"`
+
+	// UpdatedAt indicates last time the Job was updated either through enqueue, reschedule or heartbeat.
+	// This value is for reporting purposes only and will be ignored when enqueuing and rescheduling Jobs.
+	UpdatedAt *time.Time `json:"updated_at"`
 }
 
 // Config contains all information to create a new REaly instance fo use.
@@ -73,25 +76,19 @@ type Config struct {
 
 // Client is used to interact with the Client Job Server.
 type Client[P any, S any] struct {
-	enqueueURL      string
-	enqueueBatchURL string
-	heartbeatURL    string
-	rescheduleURL   string
-	completeURL     string
-	nextURL         string
-	nextBo          backoff.Exponential
-	retryBo         backoff.Exponential
-	client          *http.Client
+	baseURL string
+	nextBo  backoff.Exponential
+	retryBo backoff.Exponential
+	client  *http.Client
 }
 
 // New creates a new Client instance for use.
 func New[P any, S any](cfg Config) (*Client[P, S], error) {
-	cfg.BaseURL = strings.TrimSpace(cfg.BaseURL)
+	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	_, err := url.Parse(cfg.BaseURL)
 	if err != nil {
 		return nil, errors.Wrap(err, "Invalid URL")
 	}
-	base := strings.TrimRight(cfg.BaseURL, "/")
 
 	defaultBackoff := backoff.Exponential{}
 	if cfg.NextBackoff == defaultBackoff {
@@ -114,51 +111,17 @@ func New[P any, S any](cfg Config) (*Client[P, S], error) {
 	}
 
 	r := &Client[P, S]{
-		enqueueURL:      fmt.Sprintf("%s/enqueue", base),
-		enqueueBatchURL: fmt.Sprintf("%s/enqueue/batch", base),
-		heartbeatURL:    fmt.Sprintf("%s/heartbeat", base),
-		rescheduleURL:   fmt.Sprintf("%s/reschedule", base),
-		completeURL:     fmt.Sprintf("%s/complete", base),
-		nextURL:         fmt.Sprintf("%s/next", base),
-		nextBo:          cfg.NextBackoff,
-		retryBo:         cfg.RetryBackoff,
-		client:          cfg.Client,
+		baseURL: cfg.BaseURL,
+		nextBo:  cfg.NextBackoff,
+		retryBo: cfg.RetryBackoff,
+		client:  cfg.Client,
 	}
 	return r, nil
 }
 
 // Enqueue submits the provided Job for processing to the Job Server.
 func (r *Client[P, S]) Enqueue(ctx context.Context, job Job[P, S]) error {
-	b, err := json.Marshal(job)
-	if err != nil {
-		return errors.Wrap(err, "failed to marshal job")
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.enqueueURL, bytes.NewReader(b))
-	if err != nil {
-		return errors.Wrap(err, "failed to create enqueue request")
-	}
-	req.Header.Set(httpext.ContentType, httpext.ApplicationJSON)
-
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return errors.Wrap(err, "failed to make enqueue request")
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusAccepted:
-		return nil
-	case http.StatusConflict:
-		b, _ := io.ReadAll(resp.Body)
-		return ErrJobExits{message: unsafeext.BytesToString(b)}
-	default:
-		if httpext.IsRetryableStatusCode(resp.StatusCode) {
-			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
-		}
-		b, _ := io.ReadAll(resp.Body)
-		return errors.Newf("error: %s", unsafeext.BytesToString(b))
-	}
+	return r.EnqueueBatch(ctx, []Job[P, S]{job})
 }
 
 // EnqueueBatch submits one or more Jobs for processing to the Job Server in one call.
@@ -168,7 +131,7 @@ func (r *Client[P, S]) EnqueueBatch(ctx context.Context, jobs []Job[P, S]) error
 		return errors.Wrap(err, "failed to marshal jobs")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.enqueueBatchURL, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.baseURL+"/v1/queues/jobs", bytes.NewReader(b))
 	if err != nil {
 		return errors.Wrap(err, "failed to create enqueue batch request")
 	}
@@ -198,7 +161,7 @@ func (r *Client[P, S]) EnqueueBatch(ctx context.Context, jobs []Job[P, S]) error
 // Next attempts to retrieve the next Job in the `queue` requested. It will retry and backoff attempting to retrieve
 // a Job and will block until retrieving a Job or the Context is cancelled.
 func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) ([]*JobHelper[P, S], error) {
-	nextURL := r.nextURL + "?queue=" + url.QueryEscape(queue) + "&num_jobs=" + url.QueryEscape(strconv.Itoa(int(num_jobs)))
+	nextURL := fmt.Sprintf("%s/v1/queues/%s/jobs?num_jobs=%d", r.baseURL, url.QueryEscape(queue), num_jobs)
 	var attempt int
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, nextURL, nil)
@@ -257,11 +220,9 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 //
 //	ErrNotFound to handle such events within Job Workers so that they can bail gracefully if desired.
 func (r *Client[P, S]) Remove(ctx context.Context, queue, jobID string) error {
-	values := make(url.Values)
-	values.Set("job_id", jobID)
-	values.Set("queue", queue)
+	removeURL := fmt.Sprintf("%s/v1/queues/%s/jobs/%s", r.baseURL, url.QueryEscape(queue), url.QueryEscape(jobID))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, r.completeURL+"?"+values.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, removeURL, nil)
 	if err != nil {
 		return errors.Wrap(err, "failed to create complete request")
 	}
@@ -308,6 +269,120 @@ func (r *Client[P, S]) removeRetryable(ctx context.Context, queue, jobID string)
 			return errors.Wrap(err, "failed to remove job")
 		}
 		return nil
+	}
+}
+
+// Exists checks if a Job exists.
+func (r *Client[P, S]) Exists(ctx context.Context, queue, jobID string) (bool, error) {
+	existsURL := fmt.Sprintf("%s/v1/queues/%s/jobs/%s", r.baseURL, url.QueryEscape(queue), url.QueryEscape(jobID))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, existsURL, nil)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to create complete request")
+	}
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return false, retryableErr{err: errors.New("Temporary error occurred EOF")}
+		}
+		return false, errors.Wrap(err, "failed to make complete request")
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		if httpext.IsRetryableStatusCode(resp.StatusCode) {
+			return false, retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
+		}
+		b, _ := io.ReadAll(resp.Body)
+		return false, errors.Newf("error: %s", unsafeext.BytesToString(b))
+	}
+}
+
+// ExistsWithRetry is the same as Exits only automatically handles retryable errors.
+func (r *Client[P, S]) ExistsWithRetry(ctx context.Context, queue, jobID string) (bool, error) {
+	var attempts int
+	for {
+		if attempts > 0 {
+			if err := r.retryBo.Sleep(ctx, attempts); err != nil {
+				// can only occur if context cancelled or timout
+				return false, err
+			}
+		}
+		exists, err := r.Exists(ctx, queue, jobID)
+		if err != nil {
+			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
+				attempts++
+				continue
+			}
+			return false, errors.Wrap(err, "failed to remove job")
+		}
+		return exists, nil
+	}
+}
+
+// Get retrieves a Job from the database for debugging or usage of state data.
+func (r *Client[P, S]) Get(ctx context.Context, queue, jobID string) (*Job[P, S], error) {
+	getURL := fmt.Sprintf("%s/v1/queues/%s/jobs/%s", r.baseURL, url.QueryEscape(queue), url.QueryEscape(jobID))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getURL, nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create complete request")
+	}
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, retryableErr{err: errors.New("Temporary error occurred EOF")}
+		}
+		return nil, errors.Wrap(err, "failed to make complete request")
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var job *Job[P, S]
+		err := json.NewDecoder(resp.Body).Decode(&job)
+		if err != nil {
+			// must assume this is retryable, must be a broken connection
+			return nil, retryableErr{err: err}
+		}
+		return job, nil
+	case http.StatusNotFound:
+		return nil, ErrNotFound{message: fmt.Sprintf("Job could not be found within queue: %s with id: %s", queue, jobID)}
+	default:
+		if httpext.IsRetryableStatusCode(resp.StatusCode) {
+			return nil, retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
+		}
+		b, _ := io.ReadAll(resp.Body)
+		return nil, errors.Newf("error: %s", unsafeext.BytesToString(b))
+	}
+}
+
+// GetWithRetry is the same as Get only automatically handles retryable errors.
+func (r *Client[P, S]) GetWithRetry(ctx context.Context, queue, jobID string) (*Job[P, S], error) {
+	var attempts int
+	for {
+		if attempts > 0 {
+			if err := r.retryBo.Sleep(ctx, attempts); err != nil {
+				// can only occur if context cancelled or timout
+				return nil, err
+			}
+		}
+		job, err := r.Get(ctx, queue, jobID)
+		if err != nil {
+			if _, isRetryable := errorsext.IsRetryableHTTP(err); isRetryable {
+				attempts++
+				continue
+			}
+			return nil, errors.Wrap(err, "failed to remove job")
+		}
+		return job, nil
 	}
 }
 
@@ -361,11 +436,7 @@ func (j *JobHelper[P, S]) Heartbeat(ctx context.Context, state *S) error {
 	var err error
 	var req *http.Request
 
-	values := make(url.Values)
-	values.Set("queue", j.Job().Queue)
-	values.Set("job_id", j.Job().ID)
-
-	url := j.client.heartbeatURL + "?" + values.Encode()
+	heartbeatURL := fmt.Sprintf("%s/v1/queues/%s/jobs/%s", j.client.baseURL, url.QueryEscape(j.Job().Queue), url.QueryEscape(j.Job().ID))
 
 	if state != nil {
 		var b []byte
@@ -374,9 +445,9 @@ func (j *JobHelper[P, S]) Heartbeat(ctx context.Context, state *S) error {
 			return errors.Wrap(err, "failed to marshal heartbeat state")
 		}
 
-		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(b))
+		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, heartbeatURL, bytes.NewReader(b))
 	} else {
-		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, url, nil)
+		req, err = http.NewRequestWithContext(ctx, http.MethodPatch, heartbeatURL, nil)
 	}
 	if err != nil {
 		return errors.Wrap(err, "failed to create heartbeat request")
@@ -411,7 +482,7 @@ func (j *JobHelper[P, S]) Reschedule(ctx context.Context, job Job[P, S]) error {
 		return errors.Wrap(err, "failed to marshal job")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, j.client.rescheduleURL, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, j.client.baseURL+"/v1/queues/jobs", bytes.NewReader(b))
 	if err != nil {
 		return errors.Wrap(err, "failed to create reschedule request")
 	}
