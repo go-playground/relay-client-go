@@ -47,7 +47,9 @@ jobs:
             ${{ runner.os }}-v1-go-
 
       - name: Test
-        run: go test -race -cover ./...
+        run: make test.ci
+        env:
+          RELAY_URL: "http://localhost:8080"
 
   golangci:
     name: lint
@@ -57,4 +59,4 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v2
         with:
-          version: v1.45.2
+          version: v1.49.0
