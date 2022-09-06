@@ -1,21 +1,39 @@
+name: Lint & Test
 on:
-  push:
-    branches:
-      - master
   pull_request:
-name: Test
+    types: [opened, edited, reopened, synchronize]
 jobs:
   test:
-    strategy:
-      matrix:
-        go-version: [1.18.x]
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:13-alpine
+        ports:
+          - 5432
+        env:
+          POSTGRES_USER: username
+          POSTGRES_PASS: pass
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: relay
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      relay:
+        image: ghcr.io/rust-playground/relay-rs:0.9.0
+        ports:
+          - 8080:8080
+        env:
+          RUST_LOG: "debug"
+          DATABASE_URL: "postgres://username:pass@postgres:5432/relay?sslmode=disable"
+
     steps:
       - name: Install Go
         uses: actions/setup-go@v2
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: 1.19.x
 
       - name: Checkout code
         uses: actions/checkout@v2
@@ -29,7 +47,9 @@ jobs:
             ${{ runner.os }}-v1-go-
 
       - name: Test
-        run: go test -race -cover ./...
+        run: make test.ci
+        env:
+          RELAY_URL: "http://localhost:8080"
 
   golangci:
     name: lint
@@ -39,4 +59,4 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v2
         with:
-          version: v1.45.2
+          version: v1.49.0

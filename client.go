@@ -154,7 +154,7 @@ func (r *Client[P, S]) EnqueueBatch(ctx context.Context, jobs []Job[P, S]) error
 			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
 		}
 		b, _ := io.ReadAll(resp.Body)
-		return errors.Newf("error: %s", unsafeext.BytesToString(b))
+		return errors.New("unexpected error occurred").AddTag("body", unsafeext.BytesToString(b)).AddTag("status_code", resp.StatusCode)
 	}
 }
 
@@ -247,7 +247,7 @@ func (r *Client[P, S]) Remove(ctx context.Context, queue, jobID string) error {
 			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
 		}
 		b, _ := io.ReadAll(resp.Body)
-		return errors.Newf("error: %s", unsafeext.BytesToString(b))
+		return errors.New("unexpected error occurred").AddTag("body", unsafeext.BytesToString(b)).AddTag("status_code", resp.StatusCode)
 	}
 }
 
@@ -300,7 +300,7 @@ func (r *Client[P, S]) Exists(ctx context.Context, queue, jobID string) (bool, e
 			return false, retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
 		}
 		b, _ := io.ReadAll(resp.Body)
-		return false, errors.Newf("error: %s", unsafeext.BytesToString(b))
+		return false, errors.New("unexpected error occurred").AddTag("body", unsafeext.BytesToString(b)).AddTag("status_code", resp.StatusCode)
 	}
 }
 
@@ -360,7 +360,7 @@ func (r *Client[P, S]) Get(ctx context.Context, queue, jobID string) (*Job[P, S]
 			return nil, retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
 		}
 		b, _ := io.ReadAll(resp.Body)
-		return nil, errors.Newf("error: %s", unsafeext.BytesToString(b))
+		return nil, errors.New("unexpected error occurred").AddTag("body", unsafeext.BytesToString(b)).AddTag("status_code", resp.StatusCode)
 	}
 }
 
@@ -471,7 +471,7 @@ func (j *JobHelper[P, S]) Heartbeat(ctx context.Context, state *S) error {
 			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
 		}
 		b, _ := io.ReadAll(resp.Body)
-		return errors.Newf("error: %s", unsafeext.BytesToString(b))
+		return errors.New("unexpected error occurred").AddTag("body", unsafeext.BytesToString(b)).AddTag("status_code", resp.StatusCode)
 	}
 }
 
@@ -505,7 +505,7 @@ func (j *JobHelper[P, S]) Reschedule(ctx context.Context, job Job[P, S]) error {
 			return retryableErr{err: errors.Newf("Temporary error occurred %d", resp.StatusCode)}
 		}
 		b, _ := io.ReadAll(resp.Body)
-		return errors.Newf("error: %s", unsafeext.BytesToString(b))
+		return errors.New("unexpected error occurred").AddTag("body", unsafeext.BytesToString(b)).AddTag("status_code", resp.StatusCode)
 	}
 }
 
