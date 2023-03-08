@@ -22,7 +22,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       relay:
-        image: ghcr.io/rust-playground/relay-rs:0.9.0
+        image: ghcr.io/rust-playground/relay-rs:0.11.0
         ports:
           - 8080:8080
         env:
@@ -31,15 +31,15 @@ jobs:
 
     steps:
       - name: Install Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v3
         with:
-          go-version: 1.19.x
+          go-version: 1.20.x
 
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Restore Cache
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: ~/go/pkg/mod
           key: ${{ runner.os }}-v1-go-${{ hashFiles('**/go.sum') }}
@@ -55,8 +55,8 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v2
         with:
-          version: v1.49.0
+          version: latest
