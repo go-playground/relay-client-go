@@ -169,7 +169,7 @@ func (r *Client[P, S]) Next(ctx context.Context, queue string, num_jobs uint32) 
 			return nil, errors.Wrap(err, "failed to create next request")
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := r.client.Do(req)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to make next request")
 		}
