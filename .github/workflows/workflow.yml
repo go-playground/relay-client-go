@@ -22,7 +22,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       relay:
-        image: ghcr.io/rust-playground/relay-rs:0.11.0
+        image: ghcr.io/rust-playground/relay-rs:latest
         ports:
           - 8080:8080
         env:
@@ -57,6 +57,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v2
+        uses: golangci/golangci-lint-action@v3
         with:
           version: latest

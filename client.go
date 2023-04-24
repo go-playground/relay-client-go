@@ -41,14 +41,11 @@ type Job[P any, S any] struct {
 	Payload P `json:"payload"`
 
 	// State is the raw JSON payload that the job runner will receive.
-	//
-	// This state will be ignored when enqueueing a Job and can only be set via a Heartbeat
-	// request.
 	State *S `json:"state,omitempty"`
 
 	// RunAt can optionally schedule/set a Job to be run only at a specific time in the
 	// future. This option should mainly be used for one-time jobs and scheduled jobs that have
-	// the option of being self-perpetuated in combination with the reschedule endpoint.
+	// the option of being self-perpetuated in combination with the rescheduling endpoint.
 	RunAt *time.Time `json:"run_at,omitempty"`
 
 	// UpdatedAt indicates last time the Job was updated either through enqueue, reschedule or heartbeat.
@@ -56,7 +53,7 @@ type Job[P any, S any] struct {
 	UpdatedAt *time.Time `json:"updated_at"`
 }
 
-// Config contains all information to create a new REaly instance fo use.
+// Config contains all information to create a new Relay instance fo use.
 type Config struct {
 	// BasURL of the HTTP server
 	BaseURL string

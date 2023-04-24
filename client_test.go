@@ -13,12 +13,9 @@ import (
 )
 
 var (
-	baseURL = os.Getenv("RELAY_URL")
+	baseURL    = os.Getenv("RELAY_URL")
+	randSource = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 func TestOneTimeJob(t *testing.T) {
 
@@ -31,8 +28,8 @@ func TestOneTimeJob(t *testing.T) {
 	assert.NoError(err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	id := strconv.Itoa(rand.Int())
-	queue := strconv.Itoa(rand.Int())
+	id := strconv.Itoa(randSource.Int())
+	queue := strconv.Itoa(randSource.Int())
 	job := Job[any, any]{
 		ID:         id,
 		Queue:      queue,
@@ -89,8 +86,8 @@ func TestReschedule(t *testing.T) {
 	assert.NoError(err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	id := strconv.Itoa(rand.Int())
-	queue := strconv.Itoa(rand.Int())
+	id := strconv.Itoa(randSource.Int())
+	queue := strconv.Itoa(randSource.Int())
 	job := Job[any, any]{
 		ID:         id,
 		Queue:      queue,
@@ -147,9 +144,9 @@ func TestEnqueueMultiple(t *testing.T) {
 	assert.NoError(err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	id := strconv.Itoa(rand.Int())
-	id2 := strconv.Itoa(rand.Int())
-	queue := strconv.Itoa(rand.Int())
+	id := strconv.Itoa(randSource.Int())
+	id2 := strconv.Itoa(randSource.Int())
+	queue := strconv.Itoa(randSource.Int())
 	job1 := Job[any, any]{
 		ID:         id,
 		Queue:      queue,

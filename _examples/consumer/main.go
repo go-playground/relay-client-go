@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,10 +14,6 @@ import (
 var (
 	processed uint64
 )
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 type payload struct {
 	Key string `json:"key"`

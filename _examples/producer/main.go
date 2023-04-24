@@ -20,7 +20,6 @@ var (
 )
 
 func init() {
-	rand.Seed(time.Now().UnixNano())
 	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 1024
 	http.DefaultTransport.(*http.Transport).MaxConnsPerHost = 1024
 }
