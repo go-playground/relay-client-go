@@ -15,7 +15,11 @@ import (
 
 // Processor represents a processor of Jobs
 type Processor[P any, S any] interface {
-	// Process ...  Warning if returning an error it better be a fatal operational error
+	// Process processes the Job.
+	//
+	// NOTE: An error returned by this will NOT bubble up beyond this function, it's the responsibility of each
+	//       Processor to handle its own errors. This signature only exists to allow wrapping the Processor like
+	//       middleware to intercept it and perform actions based upon it.
 	Process(context.Context, *relay.JobHelper[P, S]) error
 }
 
@@ -212,12 +216,10 @@ func (c *Consumer[P, S, T]) process(ctx context.Context, helper *relay.JobHelper
 		}
 	}()
 
+	// explicitly NOT bubbling up, see Processor.Process description.
 	err := c.processor.Process(ctx, helper)
-	if err != nil {
-		return errors.Wrap(err, "failed processing Job")
-	}
 
-	if c.autoComplete {
+	if c.autoComplete && err == nil {
 		return helper.CompleteWithRetry(ctx)
 	}
 	return nil
